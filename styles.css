@@ -1,0 +1,33 @@
+:root {
+  --bg: #0f1115;
+  --panel: #171b22;
+  --panel2: #202632;
+  --text: #f4f7fb;
+  --muted: #a9b4c2;
+  --line: #303847;
+  --accent: #ff6b35;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: var(--bg); color: var(--text); }
+.hero { display: flex; justify-content: space-between; gap: 24px; align-items: center; padding: 32px; background: linear-gradient(135deg, #1a1f2a, #311811); border-bottom: 1px solid var(--line); }
+.eyebrow { color: var(--accent); text-transform: uppercase; letter-spacing: .12em; font-size: 12px; margin: 0 0 8px; }
+h1 { margin: 0; font-size: clamp(34px, 6vw, 64px); }
+.subhead { color: var(--muted); max-width: 780px; }
+button { border: 1px solid var(--line); background: var(--panel2); color: var(--text); border-radius: 10px; padding: 10px 14px; cursor: pointer; }
+button:hover, .filter.active { border-color: var(--accent); }
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 20px 32px; }
+.stats article { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+.stats span { display: block; font-size: 24px; font-weight: 700; }
+.stats small, .meta, .address, .sourceNotes { color: var(--muted); }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 32px 20px; }
+.cards { display: grid; gap: 14px; padding: 0 32px 40px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+.cardTop { display: flex; justify-content: space-between; width: 100%; text-align: left; background: transparent; border: 0; border-radius: 0; padding: 20px; }
+.cardTop h2 { margin: 0 0 8px; }
+.scoreWrap { min-width: 82px; text-align: center; background: var(--panel2); border-radius: 12px; padding: 10px; align-self: center; }
+.score { font-size: 28px; font-weight: 700; color: var(--accent); }
+.details { border-top: 1px solid var(--line); padding: 20px; }
+.detailGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+a { color: #8bc6ff; }
+ul { margin: 0; padding-left: 18px; }
+@media (max-width: 800px) { .hero, .cardTop { flex-direction: column; align-items: stretch; } .stats { grid-template-columns: repeat(2, 1fr); } .detailGrid { grid-template-columns: 1fr; } }

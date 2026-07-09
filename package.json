@@ -1,0 +1,11 @@
+{
+  "name": "firewatch-radar",
+  "version": "1.0.0",
+  "description": "Standalone public-source fire opportunity tracker for restoration prospecting.",
+  "type": "module",
+  "scripts": {
+    "update": "node scripts/update-firewatch.js",
+    "serve": "npx http-server ."
+  },
+  "dependencies": {}
+}

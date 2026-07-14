@@ -27,6 +27,18 @@ function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 }
 
+function googleSearchUrl(query) {
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+}
+
+function mapsSearchUrl(query) {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
+
+function permitSearchQuery(address) {
+  return `${address} Charlotte NC permit fire repair`;
+}
+
 function itemMatchesFilter(item) {
   if (currentFilter === 'All') return true;
   if (currentFilter === 'Archived') return item.archive === true || /archived/i.test(item.status || '');
@@ -66,8 +78,12 @@ function render() {
           <div class="meta">${escapeHtml(address)}</div>
           <div class="meta">${formatDate(item.fireDate)} | ${escapeHtml(item.propertyType || 'Needs Property Verification')} | ${escapeHtml(item.status || 'Confirmed Fire')}</div>
           <div class="copybar">
-            <button type="button" data-copy="${escapeHtml(address)}">Copy Address</button>
-            <button type="button" data-copy="${escapeHtml(searchLine)}">Copy Search Line</button>
+            <button type="button" data-copy="${escapeHtml(address)}" data-label="Copy Address">Copy Address</button>
+            <button type="button" data-copy="${escapeHtml(searchLine)}" data-label="Copy Search Line">Copy Search Line</button>
+            <a class="action-link" href="${escapeHtml(googleSearchUrl(searchLine))}" target="_blank" rel="noopener">Search Address</a>
+            <a class="action-link" href="${escapeHtml(googleSearchUrl(`${address} fire`))}" target="_blank" rel="noopener">Search Address + Fire</a>
+            <a class="action-link" href="${escapeHtml(googleSearchUrl(permitSearchQuery(address)))}" target="_blank" rel="noopener">Search Permits</a>
+            <a class="action-link" href="${escapeHtml(mapsSearchUrl(address))}" target="_blank" rel="noopener">Open Map</a>
           </div>
         </div>
         <div class="score">${escapeHtml(item.opportunityScore ?? 0)}<small> Score</small></div>
@@ -106,8 +122,9 @@ document.addEventListener('click', async e => {
   const copyValue = e.target?.dataset?.copy;
   if (copyValue) {
     await navigator.clipboard.writeText(copyValue);
+    const original = e.target.dataset.label || e.target.textContent || 'Copy';
     e.target.textContent = 'Copied';
-    setTimeout(() => e.target.textContent = copyValue.includes(' ') ? 'Copy Address' : 'Copy', 900);
+    setTimeout(() => e.target.textContent = original, 900);
   }
 });
 

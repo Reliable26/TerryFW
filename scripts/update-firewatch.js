@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 
 const FIREWATCH_PATH = new URL('../data/firewatch.json', import.meta.url);
 const ARCHIVED_PATH = new URL('../data/archived.json', import.meta.url);
-const FIREWATCH_VERSION = 'v10-tailored-why-this-matters';
+const FIREWATCH_VERSION = 'v13-source-guard-paginated-100-filter';
 const NOW = new Date();
 const SIX_MONTHS_MS = 183 * 24 * 60 * 60 * 1000;
 
@@ -11,7 +11,7 @@ const SIX_MONTHS_MS = 183 * 24 * 60 * 60 * 1000;
 const SOURCE_URL = 'https://data.charlottenc.gov/datasets/charlotte::cfd-public-incident-reports-all/explore';
 const QUERY_BASE = 'https://gis.charlottenc.gov/arcgis/rest/services/CFD/PublicIncidentReports/MapServer/0/query';
 const PAGE_SIZE = 4000;
-const MAX_PAGES = 30;
+const MAX_PAGES = 50;
 
 function getField(attrs, names) {
   for (const name of names) {
@@ -318,7 +318,18 @@ async function fetchFireIncidents() {
   return kept;
 }
 
+async function readExistingItems(path) {
+  try {
+    const raw = await fs.readFile(path, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 async function main() {
+  const existing = await readExistingItems(FIREWATCH_PATH);
   const features = await fetchFireIncidents();
   const active = [];
   for (const feature of features) {
@@ -326,6 +337,16 @@ async function main() {
     if (item) active.push(item);
   }
   const clean = dedupe(active).sort((a, b) => new Date(b.fireDate) - new Date(a.fireDate));
+
+  // Guardrail: do not wipe good data if Charlotte's source is temporarily unavailable,
+  // pagination changes, or the source returns an unexpected empty response.
+  if (clean.length === 0 && existing.length > 0) {
+    console.warn(`${FIREWATCH_VERSION}: produced 0 active records, preserving ${existing.length} existing records instead of wiping the dashboard.`);
+    await fs.writeFile(FIREWATCH_PATH, JSON.stringify(existing, null, 2));
+    await fs.writeFile(ARCHIVED_PATH, JSON.stringify([], null, 2));
+    return;
+  }
+
   await fs.writeFile(FIREWATCH_PATH, JSON.stringify(clean, null, 2));
   await fs.writeFile(ARCHIVED_PATH, JSON.stringify([], null, 2));
   console.log(`${FIREWATCH_VERSION}: Firewatch updated. ${clean.length} active. Only accepted codes are 100-199.`);
@@ -333,6 +354,13 @@ async function main() {
 
 main().catch(async error => {
   console.error(error);
+  const existing = await readExistingItems(FIREWATCH_PATH);
+  if (existing.length > 0) {
+    console.warn(`${FIREWATCH_VERSION}: update failed, preserving ${existing.length} existing records instead of wiping the dashboard.`);
+    await fs.writeFile(FIREWATCH_PATH, JSON.stringify(existing, null, 2));
+    await fs.writeFile(ARCHIVED_PATH, JSON.stringify([], null, 2));
+    process.exit(0);
+  }
   await fs.writeFile(FIREWATCH_PATH, JSON.stringify([], null, 2));
   await fs.writeFile(ARCHIVED_PATH, JSON.stringify([], null, 2));
   process.exit(1);

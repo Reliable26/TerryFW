@@ -1,0 +1,30 @@
+# Firewatch Radar
+
+Standalone fire-focused prospecting intelligence dashboard for Reliable Restorations.
+
+## Current behavior
+
+- Updates every 30 minutes through GitHub Actions.
+- Uses Charlotte CFD public incident data as the first structured source.
+- Strictly filters the main feed to actual 100-series fire incidents and limited smoke-related exceptions.
+- Excludes EMS-only calls, good-intent calls, assist-invalid calls, service calls, false alarms, and other non-fire incident codes.
+- Keeps the six-month active window, with older incidents archived unless the record itself contains repair/reconstruction indicators.
+- Does not guess property names when the public data only provides an address block.
+
+## Run manually
+
+Go to Actions > Update Firewatch Radar > Run workflow.
+
+## GitHub Pages
+
+The Pages deployment workflow publishes the website automatically after repository file changes.
+
+
+## Strict Fire Filter v3
+
+This build only accepts NFIRS 100-series fire incident codes from the Charlotte CFD source. It does not pull the all-incident fallback feed, which prevents 300-series EMS/rescue, 500-series service, 600-series good intent, and 700-series false alarm/system records from appearing in the dashboard. Dashboard dates display as Month Day, Year.
+
+
+## Strict Fire v4
+
+This version adds a client-side display guard. The dashboard will not display any item unless its incident code is 100-199. This means old JSON records with 300 EMS/rescue, 500 service, 600 good intent, or 700 false alarm codes are hidden even if stale data remains in the repo. The dashboard should show build `strict-fire-codes-v4-client-guard`.

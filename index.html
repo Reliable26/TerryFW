@@ -1,65 +1,252 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Firewatch Radar</title>
-  <link rel="stylesheet" href="styles.css">
-</head>
-<body>
-  <header class="hero">
-    <div>
-      <p class="eyebrow">Standalone Fire Opportunity Tracker</p>
-      <h1>Firewatch Radar</h1>
-      <p class="subhead">Recent and still-actionable fire-related restoration opportunities from public information.</p>
-    </div>
-    <button id="refreshBtn">Refresh Data</button>
-  </header>
+import fs from 'fs/promises';
 
-  <section class="stats" aria-label="Firewatch summary">
-    <article><span id="lastUpdated">--</span><small>Last Updated</small></article>
-    <article><span id="activeCount">0</span><small>Active Opportunities</small></article>
-    <article><span id="highCount">0</span><small>High Priority</small></article>
-    <article><span id="olderCount">0</span><small>Older But Actionable</small></article>
-  </section>
+const FIREWATCH_PATH = new URL('../data/firewatch.json', import.meta.url);
+const ARCHIVED_PATH = new URL('../data/archived.json', import.meta.url);
+const SIX_MONTHS_MS = 183 * 24 * 60 * 60 * 1000;
+const NOW = new Date();
 
-  <nav class="filters" aria-label="Filters">
-    <button class="filter active" data-filter="all">All</button>
-    <button class="filter" data-filter="New Fire">New Fires</button>
-    <button class="filter" data-filter="Multifamily">Multifamily</button>
-    <button class="filter" data-filter="Commercial">Commercial</button>
-    <button class="filter" data-filter="Hospitality">Hospitality</button>
-    <button class="filter" data-filter="Healthcare">Healthcare</button>
-    <button class="filter" data-filter="Education">Education</button>
-    <button class="filter" data-filter="Single-Family Strategic">Single-Family Strategic</button>
-    <button class="filter" data-filter="Brush Fire Strategic">Brush Fire Strategic</button>
-    <button class="filter" data-filter="Older But Actionable">Older But Actionable</button>
-    <button class="filter" data-filter="Archived">Archived</button>
-  </nav>
+const CHARLOTTE_ALL_BASE = 'https://gis.charlottenc.gov/arcgis/rest/services/CFD/PublicIncidentReports/MapServer/0/query';
+const CHARLOTTE_SOURCE_URL = 'https://data.charlottenc.gov/datasets/cfd-public-incident-reports-fires-only/explore';
 
-  <main id="cards" class="cards"></main>
+const TARGET_TERMS = [
+  'apartment', 'apartments', 'multi-family', 'multifamily', 'hotel', 'motel', 'extended stay',
+  'assisted living', 'nursing', 'rehabilitation', 'school', 'college', 'university', 'office',
+  'store', 'restaurant', 'retail', 'warehouse', 'industrial', 'business', 'commercial', 'shopping'
+];
 
-  <template id="cardTemplate">
-    <article class="card">
-      <button class="cardTop" type="button">
-        <div>
-          <h2 class="propertyName"></h2>
-          <p class="address"></p>
-          <p class="meta"></p>
-        </div>
-        <div class="scoreWrap"><span class="score"></span><small>Score</small></div>
-      </button>
-      <div class="details" hidden>
-        <div class="detailGrid">
-          <section><h3>Why Flagged</h3><p class="whyFlagged"></p></section>
-          <section><h3>Why This Matters</h3><p class="whyThisMatters"></p></section>
-          <section><h3>Recommended Services</h3><ul class="services"></ul></section>
-          <section><h3>Source</h3><p><a class="sourceLink" target="_blank" rel="noopener">Open source</a></p><p class="sourceNotes"></p></section>
-        </div>
-      </div>
-    </article>
-  </template>
+const EXCLUDED_TERMS = [
+  'townhouse', 'townhome', 'condominium', 'condo', 'church', 'religious', 'federal', 'state government'
+];
 
-  <script src="app.js" type="module"></script>
-</body>
-</html>
+const STRATEGIC_SINGLE_FAMILY_TERMS = [
+  'large loss', 'displaced', 'llc', 'investor', 'board', 'board-up', 'board up',
+  'reconstruction', 'repair', 'property loss', 'contents loss'
+];
+
+// Hard stop codes. These stay out even if the property type is attractive.
+// This prevents the dashboard from becoming a general emergency-call feed.
+const HARD_EXCLUDED_CODES = new Set([
+  '300', '311', '320', '321', '322', '323', '324', '350', '351', '352',
+  '500', '511', '520', '521', '522', '531', '540', '541', '542', '550', '551', '552', '553', '554', '555', '561', '571',
+  '600', '611', '621', '622', '631', '632', '641', '650', '653', '661', '671',
+  '700', '710', '711', '712', '713', '714', '715', '721', '730', '731', '732', '733', '734', '735', '736', '740', '741', '742', '743', '744', '745', '746'
+]);
+
+// Fire-adjacent exceptions we may want to see if they are tied to a target property.
+const FIRE_ADJACENT_ALLOWED_CODES = new Set([]);
+const STRICT_FIREWATCH_VERSION = 'strict-fire-v5-root-files';
+
+function getField(obj, names) {
+  for (const name of names) {
+    if (obj[name] !== undefined && obj[name] !== null && obj[name] !== '') return obj[name];
+  }
+  return '';
+}
+
+function normalizeDate(value) {
+  if (!value) return null;
+  if (typeof value === 'number') return new Date(value);
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function extractIncidentCode(incidentType) {
+  const match = String(incidentType || '').trim().match(/^(\d{3})/);
+  return match ? match[1] : '';
+}
+
+function classifyProperty(text) {
+  const t = text.toLowerCase();
+  if (/(apartment|apartments|multi-family|multifamily)/.test(t)) return 'Multifamily';
+  if (/(hotel|motel|extended stay)/.test(t)) return 'Hospitality';
+  if (/(assisted living|nursing|rehabilitation|hospital|medical)/.test(t)) return 'Healthcare';
+  if (/(school|college|university)/.test(t)) return 'Education';
+  if (/(warehouse|industrial)/.test(t)) return 'Industrial';
+  if (/(office|store|restaurant|retail|shopping|business|commercial)/.test(t)) return 'Commercial';
+  if (/(single family|one family|1 family|1 or 2 family|residential)/.test(t)) return 'Single-Family Strategic';
+  if (/(brush|woods|grass|vegetation|forest|natural vegetation)/.test(t)) return 'Brush Fire Strategic';
+  return 'Needs Property Verification';
+}
+
+function isExcludedByUse(text) {
+  const t = text.toLowerCase();
+  return EXCLUDED_TERMS.some(term => t.includes(term));
+}
+
+function hasTargetSignal(text) {
+  const t = text.toLowerCase();
+  return TARGET_TERMS.some(term => t.includes(term));
+}
+
+function hasStrategicSignal(text) {
+  const t = text.toLowerCase();
+  return STRATEGIC_SINGLE_FAMILY_TERMS.some(term => t.includes(term));
+}
+
+function hasFireDamageSignal(text) {
+  const t = text.toLowerCase();
+  return /fire|smoke|sprinkler|waterflow|explosion|burn|fire watch|suppression|carbon monoxide|co alarm|electrical fire|odor of smoke|structure fire|building fire/.test(t);
+}
+
+function isTrueFireCode(code) {
+  // NFIRS 100-series are actual fires. This is the cleanest main-source filter.
+  return /^1\d\d$/.test(code);
+}
+
+function shouldIncludeIncident({ code, text, propertyType, propertyLoss, contentsLoss }) {
+  if (!code) return false;
+  // Hard requirement for this source: only NFIRS 100-series fire incident codes.
+  // This blocks 300 rescue/EMS, 500 service, 600 good intent, and 700 false-alarm/system records even if the address/property type is attractive.
+  if (!isTrueFireCode(code)) return false;
+  if (HARD_EXCLUDED_CODES.has(code)) return false;
+
+  const isTrueFire = isTrueFireCode(code);
+  if (isExcludedByUse(text)) return false;
+
+  if (propertyType.includes('Strategic')) {
+    const hasLoss = Number(propertyLoss) > 0 || Number(contentsLoss) > 0;
+    if (!hasStrategicSignal(text) && !hasTargetSignal(text) && !hasLoss) return false;
+  }
+
+  return true;
+}
+
+function scoreItem({ propertyType, ageDays, text, propertyLoss, contentsLoss, code }) {
+  let score = 20;
+  if (['Multifamily', 'Hospitality', 'Healthcare', 'Education', 'Commercial', 'Industrial'].includes(propertyType)) score += 25;
+  if (ageDays <= 30) score += 20;
+  else if (ageDays <= 183) score += 10;
+  if (Number(propertyLoss) > 0) score += 10;
+  if (Number(contentsLoss) > 0) score += 5;
+  if (/displaced|evacuat|two alarm|2 alarm|second alarm|large loss/i.test(text)) score += 15;
+  if (/repair|reconstruction|board|board-up|demolition|roof|siding|permit/i.test(text)) score += 15;
+  if (code === '111') score += 10;
+  if (propertyType.includes('Strategic') && !hasStrategicSignal(text) && !hasTargetSignal(text)) score -= 35;
+  return Math.max(0, Math.min(100, score));
+}
+
+function buildOpportunity(feature) {
+  const attrs = feature.attributes || feature;
+  const incidentDate = normalizeDate(getField(attrs, ['IncidentDate', 'incidentdate', 'INCIDENTDATE']));
+  if (!incidentDate) return null;
+
+  const incidentType = String(getField(attrs, ['IncidentType', 'incidenttype', 'INCIDENTTYPE']));
+  const code = extractIncidentCode(incidentType);
+  const address = String(getField(attrs, ['AddressBlock', 'addressblock', 'ADDRESSBLOCK', 'Address', 'ADDRESS']));
+  const propertyUse = String(getField(attrs, ['PropertyUse', 'propertyuse', 'PROPERTYUSE']));
+  const action1 = String(getField(attrs, ['ActionTaken1', 'actiontaken1', 'ACTIONTAKEN1']));
+  const action2 = String(getField(attrs, ['ActionTaken2', 'actiontaken2', 'ACTIONTAKEN2']));
+  const action3 = String(getField(attrs, ['ActionTaken3', 'actiontaken3', 'ACTIONTAKEN3']));
+  const propertyLoss = getField(attrs, ['PropertyLoss', 'propertyloss', 'PROPERTYLOSS']);
+  const contentsLoss = getField(attrs, ['ContentsLoss', 'contentsloss', 'CONTENTSLOSS']);
+  const incidentNumber = getField(attrs, ['IncidentNumber', 'incidentnumber', 'INCIDENTNUMBER']);
+
+  const text = [incidentType, address, propertyUse, action1, action2, action3].join(' ');
+  const propertyType = classifyProperty(text);
+
+  if (!shouldIncludeIncident({ code, text, propertyType, propertyLoss, contentsLoss })) return null;
+
+  const ageDays = Math.floor((NOW - incidentDate) / (24 * 60 * 60 * 1000));
+  const recent = ageDays <= 183;
+  const activeSignal = /repair|reconstruction|board|board-up|demolition|closed|reopen|permit|roof|siding|electrical reconnect|temporary power/i.test(text);
+
+  if (!recent && !activeSignal) {
+    return {
+      archive: true,
+      item: makeItem({ incidentDate, address, propertyType, incidentNumber, incidentType, propertyUse, action1, action2, action3, propertyLoss, contentsLoss, ageDays, status: 'Archived', code })
+    };
+  }
+
+  const status = recent ? 'Confirmed Fire' : 'Older But Actionable';
+  return { archive: false, item: makeItem({ incidentDate, address, propertyType, incidentNumber, incidentType, propertyUse, action1, action2, action3, propertyLoss, contentsLoss, ageDays, status, code }) };
+}
+
+function makeItem({ incidentDate, address, propertyType, incidentNumber, incidentType, propertyUse, action1, action2, action3, propertyLoss, contentsLoss, ageDays, status, code }) {
+  const text = [incidentType, propertyUse, action1, action2, action3].filter(Boolean).join(' | ');
+  const score = scoreItem({ propertyType, ageDays, text, propertyLoss, contentsLoss, code });
+  return {
+    id: String(incidentNumber || `${address}-${incidentDate.toISOString()}`),
+    propertyName: 'Property name not yet verified',
+    address: address || 'Address block not available',
+    county: 'Mecklenburg',
+    propertyType,
+    category: propertyType,
+    fireDate: incidentDate.toISOString().slice(0, 10),
+    sourceTitle: 'Charlotte CFD Public Incident Reports',
+    sourceUrl: CHARLOTTE_SOURCE_URL,
+    sourceType: 'Public incident data',
+    opportunityScore: score,
+    status,
+    incidentCode: code,
+    whyFlagged: text || 'Fire incident record found in public incident data.',
+    whyThisMatters: 'A confirmed fire or smoke-related event can create needs for fire restoration, smoke cleaning, water mitigation from suppression activity, reconstruction, roofing, exterior repair, and interior build-back. Exact property details should be verified before outreach.',
+    recommendedServices: ['Fire Restoration', 'Smoke Cleaning', 'Water Mitigation', 'Reconstruction', 'Interior Build Back', 'Roofing / Exterior Repair Review'],
+    sourceNotes: 'Public incident data may provide an address block rather than an exact address. Property name is not assigned unless verified by another public source. EMS, good-intent, assist-invalid, false-alarm, service-call, and other non-fire incident codes are excluded.',
+    lastChecked: NOW.toISOString()
+  };
+}
+
+function buildQueryUrl({ where = '1=1', orderBy = 'IncidentDate DESC', count = 4000 } = {}) {
+  const params = new URLSearchParams({
+    where,
+    outFields: '*',
+    orderByFields: orderBy,
+    resultRecordCount: String(count),
+    f: 'json'
+  });
+  return `${CHARLOTTE_ALL_BASE}?${params.toString()}`;
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Charlotte CFD query failed: ${response.status}`);
+  const json = await response.json();
+  if (json.error) throw new Error(`Charlotte CFD query error: ${JSON.stringify(json.error)}`);
+  return json.features || [];
+}
+
+async function fetchCharlotteIncidents() {
+  // Pull two views so the tracker does not miss records if the portal sort/index behaves differently.
+  // Strict mode: only pull NFIRS 100-series fire incidents.
+  // Do not pull the All dataset fallback here; that is what allowed EMS/rescue/service records to clog the dashboard.
+  const urls = [
+    buildQueryUrl({ where: "IncidentType LIKE '1%'", orderBy: 'IncidentDate DESC', count: 4000 })
+  ];
+
+  const batches = await Promise.allSettled(urls.map(fetchJson));
+  const features = [];
+  for (const batch of batches) {
+    if (batch.status === 'fulfilled') features.push(...batch.value);
+    else console.warn(batch.reason.message);
+  }
+  return features;
+}
+
+function dedupe(items) {
+  const map = new Map();
+  for (const item of items) map.set(item.id, item);
+  return [...map.values()].sort((a, b) => String(b.fireDate).localeCompare(String(a.fireDate)) || b.opportunityScore - a.opportunityScore);
+}
+
+async function main() {
+  const active = [];
+  const archived = [];
+  try {
+    const features = await fetchCharlotteIncidents();
+    for (const feature of features) {
+      const result = buildOpportunity(feature);
+      if (!result) continue;
+      if (result.archive) archived.push(result.item);
+      else active.push(result.item);
+    }
+  } catch (error) {
+    console.error(error);
+  }
+
+  await fs.writeFile(FIREWATCH_PATH, JSON.stringify(dedupe(active), null, 2));
+  await fs.writeFile(ARCHIVED_PATH, JSON.stringify(dedupe(archived), null, 2));
+  console.log(`${STRICT_FIREWATCH_VERSION}: Firewatch updated: ${active.length} active, ${archived.length} archived`);
+  console.log('Strict filter active: source query IncidentType LIKE 1%; accepted codes must be 100-199.');
+}
+
+main();

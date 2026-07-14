@@ -1,25 +1,73 @@
-# Firewatch Radar
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Firewatch Radar</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Standalone Fire Opportunity Tracker</p>
+      <h1>Firewatch Radar</h1>
+      <p class="subhead">Recent and still-actionable fire-related restoration opportunities from public information.</p>
+      <p class="build">Build: <span id="buildVersion">strict-fire-v5-root-files</span></p>
+    </div>
+    <div class="heroActions">
+      <button id="copyVisibleBtn">Copy Visible Addresses</button>
+      <button id="refreshBtn">Refresh Data</button>
+    </div>
+  </header>
 
-Standalone fire-focused prospecting intelligence dashboard.
+  <section class="stats" aria-label="Firewatch summary">
+    <article><span id="lastUpdated">--</span><small>Last Updated</small></article>
+    <article><span id="activeCount">0</span><small>Active Opportunities</small></article>
+    <article><span id="highCount">0</span><small>High Priority</small></article>
+    <article><span id="olderCount">0</span><small>Older But Actionable</small></article>
+  </section>
 
-## What it does
+  <nav class="filters" aria-label="Filters">
+    <button class="filter active" data-filter="all">All</button>
+    <button class="filter" data-filter="New Fire">New Fires</button>
+    <button class="filter" data-filter="Multifamily">Multifamily</button>
+    <button class="filter" data-filter="Commercial">Commercial</button>
+    <button class="filter" data-filter="Hospitality">Hospitality</button>
+    <button class="filter" data-filter="Healthcare">Healthcare</button>
+    <button class="filter" data-filter="Education">Education</button>
+    <button class="filter" data-filter="Single-Family Strategic">Single-Family Strategic</button>
+    <button class="filter" data-filter="Brush Fire Strategic">Brush Fire Strategic</button>
+    <button class="filter" data-filter="Older But Actionable">Older But Actionable</button>
+    <button class="filter" data-filter="Archived">Archived</button>
+  </nav>
 
-- Pulls public Charlotte Fire incident data where available.
-- Filters fire and fire-adjacent events.
-- Scores restoration/reconstruction opportunity potential.
-- Keeps fires from the last six months unless older items have an active opportunity signal.
-- Publishes a static GitHub Pages dashboard.
+  <main id="cards" class="cards"></main>
 
-## Setup
+  <template id="cardTemplate">
+    <article class="card">
+      <button class="cardTop" type="button">
+        <div>
+          <h2 class="propertyName"></h2>
+          <p class="address"></p>
+          <p class="meta"></p>
+        </div>
+        <div class="scoreWrap"><span class="score"></span><small>Score</small></div>
+      </button>
+      <div class="quickActions">
+        <button class="copyAddress" type="button">Copy Address</button>
+        <button class="copySearch" type="button">Copy Search Line</button>
+      </div>
+      <div class="details" hidden>
+        <div class="detailGrid">
+          <section><h3>Why Flagged</h3><p class="whyFlagged"></p></section>
+          <section><h3>Why This Matters</h3><p class="whyThisMatters"></p></section>
+          <section><h3>Recommended Services</h3><ul class="services"></ul></section>
+          <section><h3>Source</h3><p><a class="sourceLink" target="_blank" rel="noopener">Open source</a></p><p class="sourceNotes"></p></section>
+        </div>
+      </div>
+    </article>
+  </template>
 
-1. Create a new GitHub repo named `firewatch-radar`.
-2. Upload all files from this ZIP into the repo.
-3. Go to **Settings > Pages**.
-4. Set source to **Deploy from a branch**.
-5. Select `main` branch and root folder `/`.
-6. Go to **Actions** and enable workflows if prompted.
-7. Run **Update Firewatch Radar** manually once.
-
-## Notes
-
-The starter script uses the City of Charlotte public incident reports ArcGIS service as the first source layer. Add additional counties, social sources, and permit searches into `scripts/update-firewatch.js` as you expand the tracker.
+  <script src="app.js" type="module"></script>
+</body>
+</html>

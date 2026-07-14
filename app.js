@@ -1,80 +1,131 @@
-let activeFilter = 'all';
-let activeData = [];
-let archivedData = [];
+const FIRE_CODE_MIN = 100;
+const FIRE_CODE_MAX = 199;
+let allItems = [];
+let currentFilter = 'All';
 
-const cards = document.getElementById('cards');
-const template = document.getElementById('cardTemplate');
-const filters = document.querySelectorAll('.filter');
-const refreshBtn = document.getElementById('refreshBtn');
+function parseCode(item) {
+  const fields = [item.incidentCode, item.incidentType, item.whyFlagged, item.rawIncidentType].filter(Boolean).join(' ');
+  const match = String(fields).match(/\b(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function isStrictFireItem(item) {
+  const code = parseCode(item);
+  return Number.isInteger(code) && code >= FIRE_CODE_MIN && code <= FIRE_CODE_MAX;
+}
+
+function formatDate(value, includeTime = false) {
+  if (!value) return 'Unknown';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const opts = { month:'long', day:'numeric', year:'numeric' };
+  if (includeTime) Object.assign(opts, { hour:'numeric', minute:'2-digit', second:'2-digit' });
+  return d.toLocaleString('en-US', opts);
+}
+
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+}
+
+function itemMatchesFilter(item) {
+  if (currentFilter === 'All') return true;
+  if (currentFilter === 'Archived') return item.archive === true || /archived/i.test(item.status || '');
+  if (currentFilter === 'Older But Actionable') return /older but actionable/i.test(item.status || '');
+  if (currentFilter === 'New Fires') return /new fire/i.test(item.status || '') || (item.ageDays ?? 999) <= 7;
+  if (currentFilter === 'Single-Family Strategic') return /single-family/i.test(item.propertyType || '');
+  if (currentFilter === 'Brush Fire Strategic') return /brush/i.test(item.propertyType || '');
+  return String(item.propertyType || '').toLowerCase().includes(currentFilter.toLowerCase());
+}
+
+function recommendedServices(item) {
+  const list = item.recommendedServices || ['Fire Restoration','Smoke Cleaning','Water Mitigation','Reconstruction','Interior Build Back','Roofing / Exterior Repair Review'];
+  return list.map(s => `<li>${escapeHtml(s)}</li>`).join('');
+}
+
+function render() {
+  const cleanItems = allItems.filter(isStrictFireItem);
+  const visible = cleanItems.filter(itemMatchesFilter);
+  document.getElementById('activeCount').textContent = cleanItems.length;
+  document.getElementById('highCount').textContent = cleanItems.filter(i => Number(i.opportunityScore || 0) >= 80).length;
+  document.getElementById('olderCount').textContent = cleanItems.filter(i => /older but actionable/i.test(i.status || '')).length;
+
+  const cards = document.getElementById('cards');
+  const empty = document.getElementById('empty');
+  cards.innerHTML = '';
+  empty.hidden = visible.length !== 0;
+
+  for (const item of visible) {
+    const address = item.address || 'Address not available';
+    const searchLine = item.propertyName && !/not yet verified/i.test(item.propertyName) ? `${item.propertyName} ${address}` : address;
+    const el = document.createElement('details');
+    el.className = 'card';
+    el.innerHTML = `
+      <summary>
+        <div>
+          <div class="title">${escapeHtml(item.propertyName || 'Property name not yet verified')}</div>
+          <div class="meta">${escapeHtml(address)}</div>
+          <div class="meta">${formatDate(item.fireDate)} | ${escapeHtml(item.propertyType || 'Needs Property Verification')} | ${escapeHtml(item.status || 'Confirmed Fire')}</div>
+          <div class="copybar">
+            <button type="button" data-copy="${escapeHtml(address)}">Copy Address</button>
+            <button type="button" data-copy="${escapeHtml(searchLine)}">Copy Search Line</button>
+          </div>
+        </div>
+        <div class="score">${escapeHtml(item.opportunityScore ?? 0)}<small> Score</small></div>
+      </summary>
+      <div class="details">
+        <div>
+          <h3>Why Flagged</h3>
+          <p>${escapeHtml(item.whyFlagged || 'Confirmed 100-series fire incident from public source.')}</p>
+          <h3>Recommended Services</h3>
+          <ul>${recommendedServices(item)}</ul>
+        </div>
+        <div>
+          <h3>Why This Matters</h3>
+          <p>${escapeHtml(item.whyThisMatters || 'A confirmed fire can create restoration, smoke cleaning, water mitigation from suppression activity, reconstruction, roofing, exterior repair, and interior build-back needs. Exact property details should be verified before outreach.')}</p>
+          <h3>Source</h3>
+          <p><a href="${escapeHtml(item.sourceUrl || '#')}" target="_blank" rel="noopener">${escapeHtml(item.sourceTitle || 'Charlotte CFD Public Incident Reports')}</a></p>
+          <p class="meta">Incident code: ${escapeHtml(parseCode(item) || 'Unknown')}. Public incident data may provide an address block rather than an exact address.</p>
+        </div>
+      </div>`;
+    cards.appendChild(el);
+  }
+}
 
 async function loadData() {
-  const [active, archived] = await Promise.all([
-    fetch('data/firewatch.json', { cache: 'no-store' }).then(r => r.json()).catch(() => []),
-    fetch('data/archived.json', { cache: 'no-store' }).then(r => r.json()).catch(() => [])
-  ]);
-  activeData = active;
-  archivedData = archived;
-  renderStats();
-  renderCards();
+  const stamp = Date.now();
+  const res = await fetch(`data/firewatch.json?v=${stamp}`, { cache:'no-store' });
+  if (!res.ok) throw new Error('Unable to load data/firewatch.json');
+  const json = await res.json();
+  allItems = Array.isArray(json) ? json : [];
+  const latest = allItems[0]?.lastChecked || new Date().toISOString();
+  document.getElementById('lastUpdated').textContent = formatDate(latest, true);
+  render();
 }
 
-function renderStats() {
-  const newest = activeData.map(x => x.lastChecked).filter(Boolean).sort().pop();
-  document.getElementById('lastUpdated').textContent = newest ? new Date(newest).toLocaleString() : '--';
-  document.getElementById('activeCount').textContent = activeData.length;
-  document.getElementById('highCount').textContent = activeData.filter(x => Number(x.opportunityScore) >= 80).length;
-  document.getElementById('olderCount').textContent = activeData.filter(x => x.status === 'Older But Actionable').length;
-}
-
-function passesFilter(item) {
-  if (activeFilter === 'all') return true;
-  if (activeFilter === 'Archived') return item.status === 'Archived';
-  return [item.status, item.propertyType, item.category].includes(activeFilter);
-}
-
-function renderCards() {
-  cards.innerHTML = '';
-  const data = activeFilter === 'Archived' ? archivedData : activeData;
-  const filtered = data.filter(passesFilter).sort((a, b) => Number(b.opportunityScore || 0) - Number(a.opportunityScore || 0));
-
-  if (!filtered.length) {
-    cards.innerHTML = '<p class="empty">No matching Firewatch opportunities found.</p>';
-    return;
+document.addEventListener('click', async e => {
+  const copyValue = e.target?.dataset?.copy;
+  if (copyValue) {
+    await navigator.clipboard.writeText(copyValue);
+    e.target.textContent = 'Copied';
+    setTimeout(() => e.target.textContent = copyValue.includes(' ') ? 'Copy Address' : 'Copy', 900);
   }
+});
 
-  for (const item of filtered) {
-    const node = template.content.cloneNode(true);
-    node.querySelector('.propertyName').textContent = item.propertyName || 'Property name not yet verified';
-    node.querySelector('.address').textContent = item.address || 'Address not verified';
-    node.querySelector('.meta').textContent = `${item.fireDate || 'Date unknown'} | ${item.propertyType || 'Property type unknown'} | ${item.status || 'Needs Verification'}`;
-    node.querySelector('.score').textContent = item.opportunityScore ?? 0;
-    node.querySelector('.whyFlagged').textContent = item.whyFlagged || 'Needs verification.';
-    node.querySelector('.whyThisMatters').textContent = item.whyThisMatters || 'Potential restoration opportunity requires source review.';
-    const ul = node.querySelector('.services');
-    (item.recommendedServices || []).forEach(service => {
-      const li = document.createElement('li');
-      li.textContent = service;
-      ul.appendChild(li);
-    });
-    const link = node.querySelector('.sourceLink');
-    link.href = item.sourceUrl || '#';
-    link.textContent = item.sourceTitle || 'Open source';
-    node.querySelector('.sourceNotes').textContent = item.sourceNotes || '';
-    const top = node.querySelector('.cardTop');
-    const details = node.querySelector('.details');
-    top.addEventListener('click', () => { details.hidden = !details.hidden; });
-    cards.appendChild(node);
-  }
-}
-
-filters.forEach(button => {
-  button.addEventListener('click', () => {
-    filters.forEach(b => b.classList.remove('active'));
-    button.classList.add('active');
-    activeFilter = button.dataset.filter;
-    renderCards();
+document.querySelectorAll('.filter').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentFilter = btn.dataset.filter;
+    render();
   });
 });
 
-refreshBtn.addEventListener('click', loadData);
-loadData();
+document.getElementById('refreshBtn').addEventListener('click', loadData);
+document.getElementById('copyVisible').addEventListener('click', async () => {
+  const lines = allItems.filter(isStrictFireItem).filter(itemMatchesFilter).map(i => i.address).filter(Boolean).join('\n');
+  await navigator.clipboard.writeText(lines);
+});
+
+loadData().catch(err => {
+  document.getElementById('cards').innerHTML = `<section class="empty">${escapeHtml(err.message)}</section>`;
+});

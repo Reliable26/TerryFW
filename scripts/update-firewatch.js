@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 
 const FIREWATCH_PATH = new URL('../data/firewatch.json', import.meta.url);
 const ARCHIVED_PATH = new URL('../data/archived.json', import.meta.url);
-const FIREWATCH_VERSION = 'v14-charlottefd-social-scrape';
+const FIREWATCH_VERSION = 'v15-strict-social-status-only';
 const NOW = new Date();
 const SIX_MONTHS_MS = 183 * 24 * 60 * 60 * 1000;
 
@@ -15,9 +15,10 @@ const MAX_PAGES = 50;
 
 
 
-// Official social layer. This is opportunistic and no-key: it attempts to read the public
-// CharlotteFD profile through normal public web responses. If X blocks the request or changes
-// its markup, the CFD incident feed still remains the source of truth and the update will continue.
+// Official social layer. This is opportunistic and no-key. It only creates social leads
+// when a clean X /status/ URL and actual incident-style post text can be extracted.
+// If X returns login/signup/page-shell boilerplate, Firewatch rejects it and continues
+// with the CFD incident feed.
 const SOCIAL_SOURCES = [
   {
     name: 'Charlotte Fire X',
@@ -31,9 +32,18 @@ const SOCIAL_SOURCES = [
 ];
 
 const FIRE_SOCIAL_TERMS = [
-  'fire', 'structure fire', 'building fire', 'apartment fire', 'commercial fire',
-  'working fire', '2 alarm', 'two alarm', '3 alarm', 'smoke', 'sprinkler',
-  'waterflow', 'evacuated', 'displaced', 'charlottefire', 'firefighters'
+  'structure fire', 'building fire', 'apartment fire', 'commercial fire',
+  'working fire', '2 alarm', 'two alarm', '3 alarm', 'alarm fire',
+  'smoke showing', 'heavy smoke', 'smoke condition', 'sprinkler activation',
+  'waterflow', 'evacuated', 'displaced', 'crews responded', 'crews on scene',
+  'firefighters extinguished', 'firefighters are on scene', 'fire under control'
+];
+
+const SOCIAL_BOILERPLATE_TERMS = [
+  'sign up', 'log in', 'cookies', 'terms of service', 'privacy policy',
+  'accessibility', 'ads info', 'more ©', 'people on x', 'don’t miss what',
+  "don't miss what", 'media media', 'replies replies', 'posts posts',
+  'new to x?', 'create account', 'joined march', 'following', 'followers'
 ];
 
 function decodeJsonStringFragment(value) {
@@ -63,9 +73,26 @@ function tweetDateFromSnowflake(id) {
   }
 }
 
+function isSocialBoilerplate(text) {
+  const t = String(text || '').toLowerCase();
+  return SOCIAL_BOILERPLATE_TERMS.some(term => t.includes(term));
+}
+
 function hasFireSocialSignal(text) {
   const t = String(text || '').toLowerCase();
-  return FIRE_SOCIAL_TERMS.some(term => t.includes(term));
+  if (!t || t.length < 35) return false;
+  if (isSocialBoilerplate(t)) return false;
+  if (FIRE_SOCIAL_TERMS.some(term => t.includes(term))) return true;
+  // Allow generic fire only when it appears with incident context, not just account/profile text.
+  return /\bfire\b/i.test(t) && /(block of|[0-9]{2,6}\s+[a-z]|displaced|evacuated|smoke|sprinkler|working|alarm|crews|extinguish|under control|injur|damage)/i.test(t);
+}
+
+function cleanSocialText(text) {
+  return stripHtml(text)
+    .replace(/\s*pic\.twitter\.com\/\S+/gi, ' ')
+    .replace(/\s*https?:\/\/t\.co\/\S+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function parseAddressFromText(text) {
@@ -79,35 +106,46 @@ function parseAddressFromText(text) {
 
 function extractTweetCandidates(html, account) {
   const candidates = new Map();
-  const statusRe = new RegExp(`(?:https?:\\/\\/(?:x|twitter)\\.com\\/${account}\\/status\\/|\\/${account}\\/status\\/)(\\d{10,25})`, 'gi');
-  let m;
-  while ((m = statusRe.exec(html)) !== null) {
-    const id = m[1];
-    candidates.set(id, { id, text: '' });
+
+  function addCandidate(id, text) {
+    const clean = cleanSocialText(text || '');
+    if (!id || !/^\d{10,25}$/.test(String(id))) return;
+    if (!hasFireSocialSignal(clean)) return;
+    candidates.set(String(id), { id: String(id), text: clean });
   }
 
-  const fullTextRe = /"full_text"\s*:\s*"((?:\\.|[^"\\])*)"/g;
-  while ((m = fullTextRe.exec(html)) !== null) {
-    const text = decodeJsonStringFragment(m[1]);
-    if (!hasFireSocialSignal(text)) continue;
-    const nearby = html.slice(Math.max(0, m.index - 3000), Math.min(html.length, m.index + 3000));
-    const idMatch = nearby.match(/(?:status\\?\/|status\/)(\d{10,25})|"id_str"\s*:\s*"(\d{10,25})"/);
-    const id = idMatch ? (idMatch[1] || idMatch[2]) : `text-${m.index}`;
-    candidates.set(id, { id, text });
+  // Try common Twitter/X JSON fields first. This is the only path that should create
+  // a lead because it provides actual post text plus a status id.
+  const jsonTextPatterns = [
+    /"full_text"\s*:\s*"((?:\\.|[^"\\])*)"/g,
+    /"tweetText"\s*:\s*"((?:\\.|[^"\\])*)"/g,
+    /"text"\s*:\s*"((?:\\.|[^"\\])*)"/g
+  ];
+
+  for (const re of jsonTextPatterns) {
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      const text = decodeJsonStringFragment(m[1]);
+      if (!hasFireSocialSignal(text)) continue;
+      const nearby = html.slice(Math.max(0, m.index - 5000), Math.min(html.length, m.index + 5000));
+      const idMatch = nearby.match(/"rest_id"\s*:\s*"(\d{10,25})"|"id_str"\s*:\s*"(\d{10,25})"|status\/(\d{10,25})/);
+      const id = idMatch ? (idMatch[1] || idMatch[2] || idMatch[3]) : '';
+      addCandidate(id, text);
+    }
   }
 
-  // Reader/proxy fallbacks may return markdown/plain text rather than Twitter JSON.
+  // Reader/proxy fallbacks may show direct status links and adjacent text. Only keep
+  // them when the same snippet contains an actual /status/ id and clean fire incident text.
   const plain = stripHtml(html);
-  const lines = plain.split(/(?:\n|\s{2,}|(?=Charlotte Fire)|(?=@CharlotteFD))/).map(x => x.trim()).filter(Boolean);
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (!hasFireSocialSignal(line)) continue;
-    const idMatch = line.match(/status\/(\d{10,25})/) || plain.slice(Math.max(0, plain.indexOf(line)-500), plain.indexOf(line)+500).match(/status\/(\d{10,25})/);
-    const id = idMatch ? idMatch[1] : `plain-${i}`;
-    if (!candidates.has(id)) candidates.set(id, { id, text: line });
+  const statusRe = new RegExp(`(?:https?:\\/\\/(?:x|twitter)\\.com\\/${account}\\/status\\/|\\/${account}\\/status\\/)(\\d{10,25})`, 'gi');
+  let match;
+  while ((match = statusRe.exec(plain)) !== null) {
+    const id = match[1];
+    const snippet = plain.slice(Math.max(0, match.index - 900), Math.min(plain.length, match.index + 900));
+    addCandidate(id, snippet);
   }
 
-  return Array.from(candidates.values()).filter(c => hasFireSocialSignal(c.text || html.slice(0, 5000)));
+  return Array.from(candidates.values());
 }
 
 async function fetchTextWithTimeout(url, timeoutMs = 15000) {
@@ -130,15 +168,16 @@ async function fetchTextWithTimeout(url, timeoutMs = 15000) {
 
 function makeSocialOpportunity(candidate, source) {
   const id = String(candidate.id || '');
-  const date = /^\d+$/.test(id) ? tweetDateFromSnowflake(id) : NOW;
+  if (!/^\d{10,25}$/.test(id)) return null;
+  const date = tweetDateFromSnowflake(id);
   if (!date) return null;
   const ageDays = Math.floor((NOW - date) / (24 * 60 * 60 * 1000));
   if (ageDays < 0 || ageDays > 183) return null;
-  const text = String(candidate.text || '').slice(0, 700);
+  const text = cleanSocialText(String(candidate.text || '')).slice(0, 700);
   if (!hasFireSocialSignal(text)) return null;
   const address = parseAddressFromText(text) || 'Address not available - verify from CharlotteFD post';
   const propertyType = classifyProperty(text);
-  const statusUrl = /^\d+$/.test(id) ? `https://x.com/${source.account}/status/${id}` : source.url;
+  const statusUrl = `https://x.com/${source.account}/status/${id}`;
   return {
     propertyName: 'Property name not yet verified',
     address,
@@ -149,12 +188,12 @@ function makeSocialOpportunity(candidate, source) {
     sourceUrl: statusUrl,
     sourceType: 'Official social media',
     opportunityScore: scoreItem({ propertyType, ageDays, propertyLoss: 0, contentsLoss: 0 }) + (address.startsWith('Address not available') ? 0 : 10),
-    status: ageDays <= 7 ? 'New Fire' : 'Social Fire Lead',
-    whyFlagged: `Official social media fire-related post: ${text}`,
-    whyThisMatters: `Charlotte Fire social activity can surface active fires before locked public incident reports appear in the CFD dataset. This should be treated as an early-warning lead: verify the exact address/property name, then check for fire restoration, smoke cleaning, suppression-water mitigation, board-up, reconstruction, exterior damage, or displacement-related needs.`,
+    status: ageDays <= 7 ? 'New Fire' : 'Social Fire Lead - Needs Verification',
+    whyFlagged: `Clean CharlotteFD social post matched fire-incident language: ${text}`,
+    whyThisMatters: `This is an early-warning social lead, not a fully verified property record. Use the post link to verify the exact location and property name. If confirmed, the opportunity may involve fire restoration, smoke cleaning, suppression-water mitigation, emergency board-up, reconstruction, or exterior damage review before the public incident dataset catches up.`,
     recommendedServices: ['Fire Restoration','Smoke Cleaning','Water Mitigation Review','Emergency Board-Up Review','Reconstruction Review','Exterior Damage Review'],
     incidentCode: 100,
-    incidentType: '100 Social fire lead from CharlotteFD',
+    incidentType: '100 Social fire lead from CharlotteFD - verified status URL required',
     incidentNumber: `social-${source.account}-${id}`,
     propertyLoss: 0,
     contentsLoss: 0,
@@ -180,7 +219,7 @@ async function fetchSocialFireLeads() {
           const item = makeSocialOpportunity(candidate, source);
           if (item) leads.push(item);
         }
-        console.log(`${FIREWATCH_VERSION}: social scrape ${source.name} via ${url} found ${candidates.length} candidates, kept ${leads.length} total social leads so far.`);
+        console.log(`${FIREWATCH_VERSION}: social scrape ${source.name} via ${url} found ${candidates.length} clean status candidates, kept ${leads.length} total social leads so far.`);
         if (candidates.length > 0) break;
       } catch (err) {
         console.warn(`${FIREWATCH_VERSION}: social scrape ${source.name} via ${url} failed: ${err.message}`);
@@ -529,7 +568,7 @@ async function main() {
 
   await fs.writeFile(FIREWATCH_PATH, JSON.stringify(clean, null, 2));
   await fs.writeFile(ARCHIVED_PATH, JSON.stringify([], null, 2));
-  console.log(`${FIREWATCH_VERSION}: Firewatch updated. ${clean.length} active. Only CFD accepted codes are 100-199; CharlotteFD social fire leads are tagged as code 100.`);
+  console.log(`${FIREWATCH_VERSION}: Firewatch updated. ${clean.length} active. Only CFD accepted codes are 100-199; CharlotteFD social leads require a clean /status/ URL and fire-incident text.`);
 }
 
 main().catch(async error => {

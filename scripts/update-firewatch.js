@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 
 const FIREWATCH_PATH = new URL('../data/firewatch.json', import.meta.url);
 const ARCHIVED_PATH = new URL('../data/archived.json', import.meta.url);
-const FIREWATCH_VERSION = 'v13-source-guard-paginated-100-filter';
+const FIREWATCH_VERSION = 'v14-charlottefd-social-scrape';
 const NOW = new Date();
 const SIX_MONTHS_MS = 183 * 24 * 60 * 60 * 1000;
 
@@ -12,6 +12,184 @@ const SOURCE_URL = 'https://data.charlottenc.gov/datasets/charlotte::cfd-public-
 const QUERY_BASE = 'https://gis.charlottenc.gov/arcgis/rest/services/CFD/PublicIncidentReports/MapServer/0/query';
 const PAGE_SIZE = 4000;
 const MAX_PAGES = 50;
+
+
+
+// Official social layer. This is opportunistic and no-key: it attempts to read the public
+// CharlotteFD profile through normal public web responses. If X blocks the request or changes
+// its markup, the CFD incident feed still remains the source of truth and the update will continue.
+const SOCIAL_SOURCES = [
+  {
+    name: 'Charlotte Fire X',
+    account: 'CharlotteFD',
+    url: 'https://x.com/CharlotteFD?lang=en',
+    fallbackUrls: [
+      'https://r.jina.ai/http://x.com/CharlotteFD?lang=en',
+      'https://r.jina.ai/http://https://x.com/CharlotteFD?lang=en'
+    ]
+  }
+];
+
+const FIRE_SOCIAL_TERMS = [
+  'fire', 'structure fire', 'building fire', 'apartment fire', 'commercial fire',
+  'working fire', '2 alarm', 'two alarm', '3 alarm', 'smoke', 'sprinkler',
+  'waterflow', 'evacuated', 'displaced', 'charlottefire', 'firefighters'
+];
+
+function decodeJsonStringFragment(value) {
+  try { return JSON.parse(`"${value}"`); } catch { return String(value || ''); }
+}
+
+function stripHtml(value) {
+  return String(value || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tweetDateFromSnowflake(id) {
+  try {
+    const n = BigInt(id);
+    const ms = Number((n >> 22n) + 1288834974657n);
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+function hasFireSocialSignal(text) {
+  const t = String(text || '').toLowerCase();
+  return FIRE_SOCIAL_TERMS.some(term => t.includes(term));
+}
+
+function parseAddressFromText(text) {
+  const raw = String(text || '').replace(/\s+/g, ' ');
+  const block = raw.match(/\b\d{2,6}\s+(?:block\s+of\s+)?[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,8}\s+(?:St|Street|Rd|Road|Dr|Drive|Ln|Lane|Ave|Avenue|Blvd|Boulevard|BV|Ct|Court|Pl|Place|Way|Pkwy|Parkway|Hwy|Highway|Ter|Terrace|Cir|Circle)\b/i);
+  if (block) return block[0].replace(/\s+/g, ' ').trim() + ', Charlotte NC';
+  const atBlock = raw.match(/\b(?:at|near|on)\s+(\d{2,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,8}\s+(?:St|Street|Rd|Road|Dr|Drive|Ln|Lane|Ave|Avenue|Blvd|Boulevard|BV|Ct|Court|Pl|Place|Way|Pkwy|Parkway|Hwy|Highway|Ter|Terrace|Cir|Circle))\b/i);
+  if (atBlock) return atBlock[1].replace(/\s+/g, ' ').trim() + ', Charlotte NC';
+  return '';
+}
+
+function extractTweetCandidates(html, account) {
+  const candidates = new Map();
+  const statusRe = new RegExp(`(?:https?:\\/\\/(?:x|twitter)\\.com\\/${account}\\/status\\/|\\/${account}\\/status\\/)(\\d{10,25})`, 'gi');
+  let m;
+  while ((m = statusRe.exec(html)) !== null) {
+    const id = m[1];
+    candidates.set(id, { id, text: '' });
+  }
+
+  const fullTextRe = /"full_text"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  while ((m = fullTextRe.exec(html)) !== null) {
+    const text = decodeJsonStringFragment(m[1]);
+    if (!hasFireSocialSignal(text)) continue;
+    const nearby = html.slice(Math.max(0, m.index - 3000), Math.min(html.length, m.index + 3000));
+    const idMatch = nearby.match(/(?:status\\?\/|status\/)(\d{10,25})|"id_str"\s*:\s*"(\d{10,25})"/);
+    const id = idMatch ? (idMatch[1] || idMatch[2]) : `text-${m.index}`;
+    candidates.set(id, { id, text });
+  }
+
+  // Reader/proxy fallbacks may return markdown/plain text rather than Twitter JSON.
+  const plain = stripHtml(html);
+  const lines = plain.split(/(?:\n|\s{2,}|(?=Charlotte Fire)|(?=@CharlotteFD))/).map(x => x.trim()).filter(Boolean);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!hasFireSocialSignal(line)) continue;
+    const idMatch = line.match(/status\/(\d{10,25})/) || plain.slice(Math.max(0, plain.indexOf(line)-500), plain.indexOf(line)+500).match(/status\/(\d{10,25})/);
+    const id = idMatch ? idMatch[1] : `plain-${i}`;
+    if (!candidates.has(id)) candidates.set(id, { id, text: line });
+  }
+
+  return Array.from(candidates.values()).filter(c => hasFireSocialSignal(c.text || html.slice(0, 5000)));
+}
+
+async function fetchTextWithTimeout(url, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'user-agent': 'Mozilla/5.0 FirewatchRadar/1.0 (+public-source-check)',
+        'accept': 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8'
+      }
+    });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return await response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function makeSocialOpportunity(candidate, source) {
+  const id = String(candidate.id || '');
+  const date = /^\d+$/.test(id) ? tweetDateFromSnowflake(id) : NOW;
+  if (!date) return null;
+  const ageDays = Math.floor((NOW - date) / (24 * 60 * 60 * 1000));
+  if (ageDays < 0 || ageDays > 183) return null;
+  const text = String(candidate.text || '').slice(0, 700);
+  if (!hasFireSocialSignal(text)) return null;
+  const address = parseAddressFromText(text) || 'Address not available - verify from CharlotteFD post';
+  const propertyType = classifyProperty(text);
+  const statusUrl = /^\d+$/.test(id) ? `https://x.com/${source.account}/status/${id}` : source.url;
+  return {
+    propertyName: 'Property name not yet verified',
+    address,
+    county: 'Mecklenburg',
+    propertyType,
+    fireDate: date.toISOString().slice(0,10),
+    sourceTitle: `${source.name} social post`,
+    sourceUrl: statusUrl,
+    sourceType: 'Official social media',
+    opportunityScore: scoreItem({ propertyType, ageDays, propertyLoss: 0, contentsLoss: 0 }) + (address.startsWith('Address not available') ? 0 : 10),
+    status: ageDays <= 7 ? 'New Fire' : 'Social Fire Lead',
+    whyFlagged: `Official social media fire-related post: ${text}`,
+    whyThisMatters: `Charlotte Fire social activity can surface active fires before locked public incident reports appear in the CFD dataset. This should be treated as an early-warning lead: verify the exact address/property name, then check for fire restoration, smoke cleaning, suppression-water mitigation, board-up, reconstruction, exterior damage, or displacement-related needs.`,
+    recommendedServices: ['Fire Restoration','Smoke Cleaning','Water Mitigation Review','Emergency Board-Up Review','Reconstruction Review','Exterior Damage Review'],
+    incidentCode: 100,
+    incidentType: '100 Social fire lead from CharlotteFD',
+    incidentNumber: `social-${source.account}-${id}`,
+    propertyLoss: 0,
+    contentsLoss: 0,
+    ageDays,
+    dateLoaded: NOW.toISOString(),
+    lastChecked: NOW.toISOString(),
+    buildVersion: FIREWATCH_VERSION,
+    socialText: text
+  };
+}
+
+async function fetchSocialFireLeads() {
+  const leads = [];
+  for (const source of SOCIAL_SOURCES) {
+    const urls = [source.url, ...(source.fallbackUrls || [])];
+    let fetched = false;
+    for (const url of urls) {
+      try {
+        const html = await fetchTextWithTimeout(url);
+        fetched = true;
+        const candidates = extractTweetCandidates(html, source.account);
+        for (const candidate of candidates) {
+          const item = makeSocialOpportunity(candidate, source);
+          if (item) leads.push(item);
+        }
+        console.log(`${FIREWATCH_VERSION}: social scrape ${source.name} via ${url} found ${candidates.length} candidates, kept ${leads.length} total social leads so far.`);
+        if (candidates.length > 0) break;
+      } catch (err) {
+        console.warn(`${FIREWATCH_VERSION}: social scrape ${source.name} via ${url} failed: ${err.message}`);
+      }
+    }
+    if (!fetched) console.warn(`${FIREWATCH_VERSION}: social scrape ${source.name} was not reachable.`);
+  }
+  return leads;
+}
 
 function getField(attrs, names) {
   for (const name of names) {
@@ -331,11 +509,13 @@ async function readExistingItems(path) {
 async function main() {
   const existing = await readExistingItems(FIREWATCH_PATH);
   const features = await fetchFireIncidents();
+  const socialLeads = await fetchSocialFireLeads();
   const active = [];
   for (const feature of features) {
     const item = makeOpportunity(feature);
     if (item) active.push(item);
   }
+  active.push(...socialLeads);
   const clean = dedupe(active).sort((a, b) => new Date(b.fireDate) - new Date(a.fireDate));
 
   // Guardrail: do not wipe good data if Charlotte's source is temporarily unavailable,
@@ -349,7 +529,7 @@ async function main() {
 
   await fs.writeFile(FIREWATCH_PATH, JSON.stringify(clean, null, 2));
   await fs.writeFile(ARCHIVED_PATH, JSON.stringify([], null, 2));
-  console.log(`${FIREWATCH_VERSION}: Firewatch updated. ${clean.length} active. Only accepted codes are 100-199.`);
+  console.log(`${FIREWATCH_VERSION}: Firewatch updated. ${clean.length} active. Only CFD accepted codes are 100-199; CharlotteFD social fire leads are tagged as code 100.`);
 }
 
 main().catch(async error => {

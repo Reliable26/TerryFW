@@ -1,7 +1,7 @@
-# Firewatch Radar v13
+# Firewatch Radar
 
-Repair build: v13-source-guard-opened-highlight.
+Build: v14-charlottefd-social-scrape
 
-This build preserves the v12 opened-card highlight UI and restores the paginated Charlotte CFD all-feed scan filtered to 100-series fire codes.
+This build keeps the v13 source guard and opened-card highlight, then adds an opportunistic no-key CharlotteFD social scrape layer.
 
-Important guardrail: if the source returns zero records or temporarily fails, the update script preserves existing data instead of wiping the dashboard.
+Primary data remains the Charlotte CFD public incident dataset. The social layer tries to read public CharlotteFD/X posts and add recent fire-related leads when a fire signal is found. If X blocks access or changes its markup, the tracker logs the issue and continues using the CFD dataset without wiping existing data.

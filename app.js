@@ -2,6 +2,7 @@ const FIRE_CODE_MIN = 100;
 const FIRE_CODE_MAX = 199;
 let allItems = [];
 let currentFilter = 'All';
+let openedItems = new Set();
 
 function parseCode(item) {
   const fields = [item.incidentCode, item.incidentType, item.whyFlagged, item.rawIncidentType].filter(Boolean).join(' ');
@@ -27,16 +28,12 @@ function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 }
 
-function googleSearchUrl(query) {
-  return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-}
-
-function mapsSearchUrl(query) {
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
-}
-
-function permitSearchQuery(address) {
-  return `${address} Charlotte NC permit fire repair`;
+function stableItemId(item) {
+  return String(
+    item.incidentNumber ||
+    item.IncidentNumber ||
+    [item.fireDate, item.address, item.incidentCode, item.sourceUrl].filter(Boolean).join('|')
+  );
 }
 
 function itemMatchesFilter(item) {
@@ -67,23 +64,23 @@ function render() {
   empty.hidden = visible.length !== 0;
 
   for (const item of visible) {
+    const itemId = stableItemId(item);
+    const wasOpened = openedItems.has(itemId);
     const address = item.address || 'Address not available';
     const searchLine = item.propertyName && !/not yet verified/i.test(item.propertyName) ? `${item.propertyName} ${address}` : address;
     const el = document.createElement('details');
-    el.className = 'card';
+    el.className = wasOpened ? 'card opened' : 'card';
+    el.dataset.itemId = itemId;
     el.innerHTML = `
       <summary>
         <div>
+          <div class="review-state">${wasOpened ? 'Opened this session' : 'Not opened yet'}</div>
           <div class="title">${escapeHtml(item.propertyName || 'Property name not yet verified')}</div>
           <div class="meta">${escapeHtml(address)}</div>
           <div class="meta">${formatDate(item.fireDate)} | ${escapeHtml(item.propertyType || 'Needs Property Verification')} | ${escapeHtml(item.status || 'Confirmed Fire')}</div>
           <div class="copybar">
-            <button type="button" data-copy="${escapeHtml(address)}" data-label="Copy Address">Copy Address</button>
-            <button type="button" data-copy="${escapeHtml(searchLine)}" data-label="Copy Search Line">Copy Search Line</button>
-            <a class="action-link" href="${escapeHtml(googleSearchUrl(searchLine))}" target="_blank" rel="noopener">Search Address</a>
-            <a class="action-link" href="${escapeHtml(googleSearchUrl(`${address} fire`))}" target="_blank" rel="noopener">Search Address + Fire</a>
-            <a class="action-link" href="${escapeHtml(googleSearchUrl(permitSearchQuery(address)))}" target="_blank" rel="noopener">Search Permits</a>
-            <a class="action-link" href="${escapeHtml(mapsSearchUrl(address))}" target="_blank" rel="noopener">Open Map</a>
+            <button type="button" data-copy="${escapeHtml(address)}">Copy Address</button>
+            <button type="button" data-copy="${escapeHtml(searchLine)}">Copy Search Line</button>
           </div>
         </div>
         <div class="score">${escapeHtml(item.opportunityScore ?? 0)}<small> Score</small></div>
@@ -113,6 +110,7 @@ async function loadData() {
   if (!res.ok) throw new Error('Unable to load data/firewatch.json');
   const json = await res.json();
   allItems = Array.isArray(json) ? json : [];
+  openedItems = new Set();
   const latest = allItems[0]?.lastChecked || new Date().toISOString();
   document.getElementById('lastUpdated').textContent = formatDate(latest, true);
   render();
@@ -121,12 +119,24 @@ async function loadData() {
 document.addEventListener('click', async e => {
   const copyValue = e.target?.dataset?.copy;
   if (copyValue) {
+    const originalLabel = e.target.textContent;
     await navigator.clipboard.writeText(copyValue);
-    const original = e.target.dataset.label || e.target.textContent || 'Copy';
     e.target.textContent = 'Copied';
-    setTimeout(() => e.target.textContent = original, 900);
+    setTimeout(() => e.target.textContent = originalLabel, 900);
   }
 });
+
+
+document.addEventListener('toggle', e => {
+  if (!e.target?.classList?.contains('card')) return;
+  if (!e.target.open) return;
+  const id = e.target.dataset.itemId;
+  if (!id) return;
+  openedItems.add(id);
+  e.target.classList.add('opened');
+  const state = e.target.querySelector('.review-state');
+  if (state) state.textContent = 'Opened this session';
+}, true);
 
 document.querySelectorAll('.filter').forEach(btn => {
   btn.addEventListener('click', () => {

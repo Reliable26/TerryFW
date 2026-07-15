@@ -1,14 +1,5 @@
-# Firewatch Radar
+# Firewatch Radar v16
 
-Build: v15-strict-social-status-only
+Adds basic dashboard controls: search, sort, incident-code filter, newest-fire-date stat, current-month count, and diagnostics.
 
-This build keeps the v13 source guard and opened-card highlight, then replaces the loose CharlotteFD social scrape with a strict status-only social check.
-
-Primary data remains the Charlotte CFD public incident dataset. The social layer only creates a social lead when it can extract:
-
-- a real CharlotteFD `/status/` post URL
-- clean incident-style post text
-- fire-related language
-- no X login/signup/footer boilerplate
-
-If X returns page-shell text, login language, or no clean status post, Firewatch rejects the social result and continues using the CFD dataset without wiping existing data.
+Upload code files only; do not overwrite data/firewatch.json if the current site has good data.

@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 
 const FIREWATCH_PATH = new URL('../data/firewatch.json', import.meta.url);
 const ARCHIVED_PATH = new URL('../data/archived.json', import.meta.url);
-const FIREWATCH_VERSION = 'v15-strict-social-status-only';
+const FIREWATCH_VERSION = 'v16-sort-search-diagnostics';
 const NOW = new Date();
 const SIX_MONTHS_MS = 183 * 24 * 60 * 60 * 1000;
 
@@ -568,7 +568,12 @@ async function main() {
 
   await fs.writeFile(FIREWATCH_PATH, JSON.stringify(clean, null, 2));
   await fs.writeFile(ARCHIVED_PATH, JSON.stringify([], null, 2));
-  console.log(`${FIREWATCH_VERSION}: Firewatch updated. ${clean.length} active. Only CFD accepted codes are 100-199; CharlotteFD social leads require a clean /status/ URL and fire-incident text.`);
+  const newest = clean.map(i => new Date(i.fireDate).getTime()).filter(Number.isFinite).sort((a,b)=>b-a)[0];
+  const currentMonth = clean.filter(i => {
+    const d = new Date(i.fireDate || '');
+    return !Number.isNaN(d.getTime()) && d.getFullYear() === NOW.getFullYear() && d.getMonth() === NOW.getMonth();
+  }).length;
+  console.log(`${FIREWATCH_VERSION}: Firewatch updated. ${clean.length} active. Newest fire date: ${newest ? new Date(newest).toISOString().slice(0,10) : 'none'}. Current month records: ${currentMonth}. Only CFD accepted codes are 100-199; CharlotteFD social leads require a clean /status/ URL and fire-incident text.`);
 }
 
 main().catch(async error => {

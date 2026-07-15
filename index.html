@@ -12,17 +12,45 @@
       <div class="eyebrow">Standalone Fire Opportunity Tracker</div>
       <h1>Firewatch Radar</h1>
       <p>Recent and still-actionable fire-related restoration opportunities from public information.</p>
-      <p class="build-marker">Build: v15-strict-social-status-only</p>
+      <p class="build-marker">Build: v16-sort-search-diagnostics</p>
     </div>
     <button id="refreshBtn" type="button">Refresh Data</button>
   </header>
 
   <main>
-    <section class="stats">
+    <section class="stats stats-wide">
       <div class="stat"><strong id="lastUpdated">Loading...</strong><span>Last Updated</span></div>
       <div class="stat"><strong id="activeCount">0</strong><span>Active Opportunities</span></div>
       <div class="stat"><strong id="highCount">0</strong><span>High Priority</span></div>
       <div class="stat"><strong id="olderCount">0</strong><span>Older But Actionable</span></div>
+      <div class="stat"><strong id="newestFireDate">Loading...</strong><span>Newest Fire Date in Data</span></div>
+      <div class="stat"><strong id="currentMonthCount">0</strong><span>Current Month Records</span></div>
+    </section>
+
+    <section class="controls">
+      <label>
+        Search
+        <input id="searchBox" type="search" placeholder="Search address, code, property type, source..." />
+      </label>
+      <label>
+        Sort
+        <select id="sortSelect">
+          <option value="date-desc">Newest fire date first</option>
+          <option value="date-asc">Oldest fire date first</option>
+          <option value="score-desc">Highest opportunity score</option>
+          <option value="score-asc">Lowest opportunity score</option>
+          <option value="code-asc">Incident code low to high</option>
+          <option value="code-desc">Incident code high to low</option>
+          <option value="address-asc">Address A to Z</option>
+          <option value="property-asc">Property type A to Z</option>
+        </select>
+      </label>
+      <label>
+        Incident Code
+        <select id="codeSelect">
+          <option value="All">All 100-series codes</option>
+        </select>
+      </label>
     </section>
 
     <section class="toolbar">
@@ -40,6 +68,7 @@
       <button id="copyVisible" type="button">Copy Visible Addresses</button>
     </section>
 
+    <section id="diagnostics" class="diagnostics"></section>
     <section id="cards" class="cards"></section>
     <section id="empty" class="empty" hidden>No matching Firewatch opportunities are currently available.</section>
   </main>
